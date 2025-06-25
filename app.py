@@ -26,89 +26,85 @@ st.set_page_config(
 @st.cache_resource
 # --- CORRECTED HELPER FUNCTION FOR "REAL" IMAGE LOOK ---
 
-def run_yolo_on_image(image_as_pil, confidence, selected_classes=None):
-    """
-    Performs YOLO prediction and returns results as HOLLOW bounding boxes
-    to show the real image underneath.
-    """
-    if not model:
-        st.warning("YOLO model not loaded. Cannot perform auto-detection.")
-        return []
-
-    img_array = np.array(image_as_pil)
-    results = model.predict(source=img_array, conf=confidence, verbose=False)
-
-    canvas_objects = []
-    for result in results:
-        # --- CHANGE 1: We will ONLY process the boxes, not the masks ---
-        if result.boxes is not None:
-            for box in result.boxes:
-                class_id = int(box.cls[0])
-                class_name = model.names[class_id]
-
-                if selected_classes and class_name not in selected_classes:
-                    continue
-
-                x1, y1, x2, y2 = box.xyxy[0].tolist()
-                # The color of the outline
-                color = st.session_state.class_colors.get(class_name, "#FF6B6B")
-
-                canvas_objects.append({
-                    "type": "rect",
-                    "left": x1,
-                    "top": y1,
-                    "width": x2 - x1,
-                    "height": y2 - y1,
-                    # --- CHANGE 2: Make the fill TRANSPARENT to create a hollow box ---
-                    "fill": "rgba(0, 0, 0, 0)", # Fully transparent fill
-                    "stroke": color,            # The visible outline color
-                    "strokeWidth": 3,           # A slightly thicker outline
-                    "label": f"{class_name} ({box.conf[0]:.2f})",
-                    "class": class_name,
-                    "confidence": float(box.conf[0])
-                })
-
-        # --- The entire block for processing masks has been REMOVED ---
-        # if result.masks is not None:
-        #     ... (All this code is gone) ...
-
-    return canvas_objects
-
+# --- MODEL LOADING (Corrected Version) ---
+@st.cache_resource
+def load_yolo_model():
+    """Loads the YOLOv8-seg model with multiple fallback approaches."""
+    import warnings
+    warnings.filterwarnings('ignore')
+    
+    # Method 1: Try loading with comprehensive safe globals
+    try:
+        # Get all ultralytics classes dynamically
+        import ultralytics.nn.modules as modules
+        import ultralytics.nn.tasks as tasks
+        
+        # Collect all classes from the modules
+        safe_classes = []
+        for name in dir(modules):
+            attr = getattr(modules, name)
+            if isinstance(attr, type):
+                safe_classes.append(attr)
+        
+        for name in dir(tasks):
+            attr = getattr(tasks, name)
+            if isinstance(attr, type):
+                safe_classes.append(attr)
+        
+        # Add torch classes
+        safe_classes.extend([Sequential])
+        
+        torch.serialization.add_safe_globals(safe_classes)
+        model = YOLO('yolov8n-seg.pt')
+        st.success("✅ Model loaded with safe globals method")
+        return model
+        
     except Exception as e1:
         st.warning(f"Safe globals method failed: {e1}")
-
+    
     # Method 2: Monkey patch the torch.load function
     try:
         st.info("Trying monkey patch method...")
         import torch
         original_load = torch.load
-
+        
         def patched_load(*args, **kwargs):
             kwargs['weights_only'] = False
             return original_load(*args, **kwargs)
-
+        
         torch.load = patched_load
         model = YOLO('yolov8n-seg.pt')
         torch.load = original_load  # Restore original
         st.success("✅ Model loaded with monkey patch method")
         return model
-
+        
     except Exception as e2:
         st.warning(f"Monkey patch method failed: {e2}")
         torch.load = original_load  # Restore original even if failed
-
+    
     # Method 3: Use older PyTorch serialization
     try:
         st.info("Trying compatibility mode...")
         import pickle
         import os
-
+        
         # Temporarily disable pickle restrictions
         os.environ['TORCH_SERIALIZATION_WEIGHTS_ONLY'] = 'False'
-
+        
         model = YOLO('yolov8n-seg.pt')
         st.success("✅ Model loaded with compatibility mode")
         return model
+        
+    except Exception as e3:
+        st.error(f"All loading methods failed. Error: {e3}")
+        st.info("🔧 **Workaround suggestions:**")
+        st.info("1. Try running: `pip install torch==1.13.1 ultralytics==8.0.20`")
+        st.info("2. Or set environment variable: `export TORCH_SERIALIZATION_WEIGHTS_ONLY=False`")
+        st.info("3. The app will work in manual annotation mode")
+        return None
+
+    except Exception as e1:
+        st.warning(f"Safe globals method failed: {e1}")
 
     except Exception as e3:
         st.error(f"All loading methods failed. Error: {e3}")
