@@ -234,24 +234,51 @@ if st.session_state.uploaded_files:
 
     st.subheader(f"Annotating: `{selected_filename}`")
     
-    # Show model status
-    if model:
-        st.success("✅ YOLO model loaded successfully")
+    # Show image info and instructions
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        st.info(f"📐 Image size: {current_image.size[0]}×{current_image.size[1]} pixels")
+    with col2:
+        if st.button("🎯 Quick Auto-Detect", help="Run YOLO detection with current confidence"):
+            detected_objects = run_yolo_on_image(current_image, confidence_slider)
+            st.session_state.annotations[selected_filename]["objects"] = detected_objects
+            st.session_state.canvas_key = f"canvas_{st.session_state.current_image_index}_{confidence_slider}"
+            st.rerun()
+    with col3:
+        if st.button("🗑️ Clear All", help="Clear all annotations"):
+            st.session_state.annotations[selected_filename]["objects"] = []
+            st.session_state.canvas_key = f"canvas_clear_{st.session_state.current_image_index}"
+            st.rerun()
+
+    # Calculate canvas dimensions to fit the image properly
+    max_width = 800
+    max_height = 600
+    
+    # Scale image to fit in canvas while maintaining aspect ratio
+    img_width, img_height = current_image.size
+    scale_factor = min(max_width / img_width, max_height / img_height, 1.0)
+    
+    canvas_width = int(img_width * scale_factor)
+    canvas_height = int(img_height * scale_factor)
+    
+    # Resize image for canvas if needed
+    if scale_factor < 1.0:
+        display_image = current_image.resize((canvas_width, canvas_height), Image.Resampling.LANCZOS)
     else:
-        st.warning("⚠️ YOLO model failed to load - manual annotation only")
+        display_image = current_image
 
     canvas_result = st_canvas(
         fill_color="rgba(255, 165, 0, 0.3)",
         stroke_width=stroke_width,
         stroke_color=stroke_color,
         background_color=bg_color,
-        background_image=current_image,
+        background_image=display_image,
         update_streamlit=True,
-        height=600,
+        height=canvas_height,
+        width=canvas_width,
         drawing_mode=drawing_mode,
         initial_drawing={"version": "5.3.0", "objects": initial_drawing["objects"]},
-        key=st.session_state.canvas_key,
-        width=current_image.width
+        key=st.session_state.canvas_key
     )
 
     if canvas_result.json_data is not None:
