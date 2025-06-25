@@ -19,12 +19,14 @@ st.set_page_config(
 # --- MODEL LOADING ---
 @st.cache_resource
 def load_yolo_model():
-    """Loads the YOLOv8-seg model using the correct PyTorch security context."""
+    """Loads the YOLOv8-seg model using the correct PyTorch security method."""
     try:
-        # This context manager is the definitive fix for the "Unsupported global" error.
-        # It tells PyTorch that it's safe to load the SegmentationModel class.
-        with torch.serialization.safe_globals():
-            model = YOLO('yolov8n-seg.pt')
+        # This is the definitive fix for the "Unsupported global" error.
+        # We explicitly tell PyTorch that the SegmentationModel class is safe to unpickle.
+        torch.serialization.add_safe_globals([SegmentationModel])
+        
+        # Now, we can load the model as usual.
+        model = YOLO('yolov8n-seg.pt')
         return model
     except Exception as e:
         # Display the full error to help debug if it still fails
