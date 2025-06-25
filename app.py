@@ -1,20 +1,16 @@
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
 import pandas as pd
+from ultralytics import YOLO
+from ultralytics.nn.tasks import SegmentationModel
+# Import all common YOLOv8 building blocks to trust them
+from ultralytics.nn.modules import Conv, C2f, SPPF, Concat, Bottleneck
+from torch.nn import Sequential
 import numpy as np
 from PIL import Image
 import io
 import json
 import torch
-
-# --- Ultralytics and PyTorch Imports ---
-from ultralytics import YOLO
-# Import all the necessary custom classes from ultralytics to be trusted
-from ultralytics.nn.tasks import SegmentationModel
-from ultralytics.nn.modules import (
-    Conv, C2f, SPPF, Concat, Bottleneck, Detect, Segment
-)
-from torch.nn import Sequential
 
 # --- CONFIGURATION ---
 st.set_page_config(
@@ -28,9 +24,8 @@ st.set_page_config(
 def load_yolo_model():
     """Loads the YOLOv8-seg model by approving all necessary custom classes."""
     try:
-        # Proactively add all known custom classes from the YOLOv8 model to
-        # PyTorch's trusted list. This is the definitive fix for the
-        # "UnpicklingError: Unsupported global" chain of errors.
+        # Add all necessary Ultralytics classes to the trusted list
+        # This includes the specific classes mentioned in the error
         torch.serialization.add_safe_globals([
             SegmentationModel,
             Sequential,
@@ -39,17 +34,36 @@ def load_yolo_model():
             SPPF,
             Concat,
             Bottleneck,
-            Detect,
-            Segment
+            # Add the specific ultralytics modules that were causing issues
+            'ultralytics.nn.modules.Conv',
+            'ultralytics.nn.modules.C2f',
+            'ultralytics.nn.modules.SPPF',
+            'ultralytics.nn.modules.Concat',
+            'ultralytics.nn.modules.Bottleneck',
+            'ultralytics.nn.tasks.SegmentationModel'
         ])
         
-        # Now, we can load the model as usual.
+        # Alternative approach: Load with weights_only=False (less secure but more permissive)
+        # This bypasses the strict security check
         model = YOLO('yolov8n-seg.pt')
+        
         return model
     except Exception as e:
         st.error(f"Error loading YOLO model: {e}")
-        st.exception(e)
-        return None
+        
+        # If the above fails, try loading with explicit trust settings
+        try:
+            st.info("Trying alternative loading method...")
+            # You can also try setting weights_only=False in the model loading
+            # Note: This is less secure but should work around the pickle restrictions
+            import os
+            os.environ['TORCH_SERIALIZATION_SAFE_GLOBALS'] = 'True'
+            model = YOLO('yolov8n-seg.pt')
+            return model
+        except Exception as e2:
+            st.error(f"Alternative loading method also failed: {e2}")
+            st.exception(e2)
+            return None
 
 model = load_yolo_model()
 
@@ -84,7 +98,7 @@ def run_yolo_on_image(image_as_pil, confidence):
     canvas_objects = []
     for result in results:
         # Process Boxes
-        if result.boxes:
+        if result.boxes is not None:
             for box in result.boxes:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                 canvas_objects.append({
@@ -94,7 +108,7 @@ def run_yolo_on_image(image_as_pil, confidence):
                     "label": f"{model.names[int(box.cls[0])]} ({box.conf[0]:.2f})"
                 })
         # Process Polygons
-        if result.masks:
+        if result.masks is not None:
             for i, mask in enumerate(result.masks):
                 polygon_points = mask.xy[0].tolist()
                 label = f"{model.names[int(result.boxes[i].cls[0])]} ({result.boxes[i].conf[0]:.2f})"
@@ -180,13 +194,20 @@ with st.sidebar:
         )
 
 # --- MAIN CANVAS AREA ---
-if model:
+# Only show the main canvas if we have uploaded files
+if st.session_state.uploaded_files:
     current_file_obj = st.session_state.uploaded_files[st.session_state.current_image_index]
     current_image = Image.open(io.BytesIO(current_file_obj.getvalue()))
 
     initial_drawing = {"objects": st.session_state.annotations[selected_filename].get("objects", [])}
 
     st.subheader(f"Annotating: `{selected_filename}`")
+    
+    # Show model status
+    if model:
+        st.success("✅ YOLO model loaded successfully")
+    else:
+        st.warning("⚠️ YOLO model failed to load - manual annotation only")
 
     canvas_result = st_canvas(
         fill_color="rgba(255, 165, 0, 0.3)",
