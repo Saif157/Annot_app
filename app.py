@@ -22,48 +22,79 @@ st.set_page_config(
 # --- MODEL LOADING ---
 @st.cache_resource
 def load_yolo_model():
-    """Loads the YOLOv8-seg model by approving all necessary custom classes."""
+    """Loads the YOLOv8-seg model with multiple fallback approaches."""
+    import warnings
+    warnings.filterwarnings('ignore')
+    
+    # Method 1: Try loading with comprehensive safe globals
     try:
-        # Add all necessary Ultralytics classes to the trusted list
-        # This includes the specific classes mentioned in the error
-        torch.serialization.add_safe_globals([
-            SegmentationModel,
-            Sequential,
-            Conv,
-            C2f,
-            SPPF,
-            Concat,
-            Bottleneck,
-            # Add the specific ultralytics modules that were causing issues
-            'ultralytics.nn.modules.Conv',
-            'ultralytics.nn.modules.C2f',
-            'ultralytics.nn.modules.SPPF',
-            'ultralytics.nn.modules.Concat',
-            'ultralytics.nn.modules.Bottleneck',
-            'ultralytics.nn.tasks.SegmentationModel'
-        ])
+        # Get all ultralytics classes dynamically
+        import ultralytics.nn.modules as modules
+        import ultralytics.nn.tasks as tasks
         
-        # Alternative approach: Load with weights_only=False (less secure but more permissive)
-        # This bypasses the strict security check
+        # Collect all classes from the modules
+        safe_classes = []
+        for name in dir(modules):
+            attr = getattr(modules, name)
+            if isinstance(attr, type):
+                safe_classes.append(attr)
+        
+        for name in dir(tasks):
+            attr = getattr(tasks, name)
+            if isinstance(attr, type):
+                safe_classes.append(attr)
+        
+        # Add torch classes
+        safe_classes.extend([Sequential])
+        
+        torch.serialization.add_safe_globals(safe_classes)
         model = YOLO('yolov8n-seg.pt')
-        
+        st.success("✅ Model loaded with safe globals method")
         return model
-    except Exception as e:
-        st.error(f"Error loading YOLO model: {e}")
         
-        # If the above fails, try loading with explicit trust settings
-        try:
-            st.info("Trying alternative loading method...")
-            # You can also try setting weights_only=False in the model loading
-            # Note: This is less secure but should work around the pickle restrictions
-            import os
-            os.environ['TORCH_SERIALIZATION_SAFE_GLOBALS'] = 'True'
-            model = YOLO('yolov8n-seg.pt')
-            return model
-        except Exception as e2:
-            st.error(f"Alternative loading method also failed: {e2}")
-            st.exception(e2)
-            return None
+    except Exception as e1:
+        st.warning(f"Safe globals method failed: {e1}")
+    
+    # Method 2: Monkey patch the torch.load function
+    try:
+        st.info("Trying monkey patch method...")
+        import torch
+        original_load = torch.load
+        
+        def patched_load(*args, **kwargs):
+            kwargs['weights_only'] = False
+            return original_load(*args, **kwargs)
+        
+        torch.load = patched_load
+        model = YOLO('yolov8n-seg.pt')
+        torch.load = original_load  # Restore original
+        st.success("✅ Model loaded with monkey patch method")
+        return model
+        
+    except Exception as e2:
+        st.warning(f"Monkey patch method failed: {e2}")
+        torch.load = original_load  # Restore original even if failed
+    
+    # Method 3: Use older PyTorch serialization
+    try:
+        st.info("Trying compatibility mode...")
+        import pickle
+        import os
+        
+        # Temporarily disable pickle restrictions
+        os.environ['TORCH_SERIALIZATION_WEIGHTS_ONLY'] = 'False'
+        
+        model = YOLO('yolov8n-seg.pt')
+        st.success("✅ Model loaded with compatibility mode")
+        return model
+        
+    except Exception as e3:
+        st.error(f"All loading methods failed. Error: {e3}")
+        st.info("🔧 **Workaround suggestions:**")
+        st.info("1. Try running: `pip install torch==1.13.1 ultralytics==8.0.20`")
+        st.info("2. Or set environment variable: `export TORCH_SERIALIZATION_WEIGHTS_ONLY=False`")
+        st.info("3. The app will work in manual annotation mode")
+        return None
 
 model = load_yolo_model()
 
