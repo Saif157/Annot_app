@@ -24,36 +24,55 @@ st.set_page_config(
 
 # --- MODEL LOADING ---
 @st.cache_resource
-def load_yolo_model():
-    """Loads the YOLOv8-seg model with multiple fallback approaches."""
-    import warnings
-    warnings.filterwarnings('ignore')
+# --- CORRECTED HELPER FUNCTION FOR "REAL" IMAGE LOOK ---
 
-    # Method 1: Try loading with comprehensive safe globals
-    try:
-        # Get all ultralytics classes dynamically
-        import ultralytics.nn.modules as modules
-        import ultralytics.nn.tasks as tasks
+def run_yolo_on_image(image_as_pil, confidence, selected_classes=None):
+    """
+    Performs YOLO prediction and returns results as HOLLOW bounding boxes
+    to show the real image underneath.
+    """
+    if not model:
+        st.warning("YOLO model not loaded. Cannot perform auto-detection.")
+        return []
 
-        # Collect all classes from the modules
-        safe_classes = []
-        for name in dir(modules):
-            attr = getattr(modules, name)
-            if isinstance(attr, type):
-                safe_classes.append(attr)
+    img_array = np.array(image_as_pil)
+    results = model.predict(source=img_array, conf=confidence, verbose=False)
 
-        for name in dir(tasks):
-            attr = getattr(tasks, name)
-            if isinstance(attr, type):
-                safe_classes.append(attr)
+    canvas_objects = []
+    for result in results:
+        # --- CHANGE 1: We will ONLY process the boxes, not the masks ---
+        if result.boxes is not None:
+            for box in result.boxes:
+                class_id = int(box.cls[0])
+                class_name = model.names[class_id]
 
-        # Add torch classes
-        safe_classes.extend([Sequential])
+                if selected_classes and class_name not in selected_classes:
+                    continue
 
-        torch.serialization.add_safe_globals(safe_classes)
-        model = YOLO('yolov8n-seg.pt')
-        st.success("✅ Model loaded with safe globals method")
-        return model
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                # The color of the outline
+                color = st.session_state.class_colors.get(class_name, "#FF6B6B")
+
+                canvas_objects.append({
+                    "type": "rect",
+                    "left": x1,
+                    "top": y1,
+                    "width": x2 - x1,
+                    "height": y2 - y1,
+                    # --- CHANGE 2: Make the fill TRANSPARENT to create a hollow box ---
+                    "fill": "rgba(0, 0, 0, 0)", # Fully transparent fill
+                    "stroke": color,            # The visible outline color
+                    "strokeWidth": 3,           # A slightly thicker outline
+                    "label": f"{class_name} ({box.conf[0]:.2f})",
+                    "class": class_name,
+                    "confidence": float(box.conf[0])
+                })
+
+        # --- The entire block for processing masks has been REMOVED ---
+        # if result.masks is not None:
+        #     ... (All this code is gone) ...
+
+    return canvas_objects
 
     except Exception as e1:
         st.warning(f"Safe globals method failed: {e1}")
