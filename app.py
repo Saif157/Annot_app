@@ -2,14 +2,15 @@ import streamlit as st
 from streamlit_drawable_canvas import st_canvas
 import pandas as pd
 from ultralytics import YOLO
-from ultralytics.nn.tasks import SegmentationModel  # Needed for trust
-from ultralytics.nn.modules import Conv  # The NEW trusted class
-from torch.nn import Sequential  # Needed for trust
+from ultralytics.nn.tasks import SegmentationModel
+# Import all common YOLOv8 building blocks to trust them
+from ultralytics.nn.modules import Conv, C2f, SPPF, Concat, Bottleneck
+from torch.nn import Sequential
 import numpy as np
 from PIL import Image
 import io
 import json
-import torch  # Needed for trust
+import torch
 
 # --- CONFIGURATION ---
 st.set_page_config(
@@ -21,11 +22,19 @@ st.set_page_config(
 # --- MODEL LOADING ---
 @st.cache_resource
 def load_yolo_model():
-    """Loads the YOLOv8-seg model using the correct PyTorch security method."""
+    """Loads the YOLOv8-seg model by approving all necessary custom classes."""
     try:
-        # We explicitly tell PyTorch all the classes that are safe to unpickle.
-        # This list now includes ALL classes that have caused errors.
-        torch.serialization.add_safe_globals([SegmentationModel, Sequential, Conv])
+        # Proactively add all common YOLOv8 classes to the trusted list.
+        # This should prevent any further "UnpicklingError" messages.
+        torch.serialization.add_safe_globals([
+            SegmentationModel,
+            Sequential,
+            Conv,
+            C2f,
+            SPPF,
+            Concat,
+            Bottleneck
+        ])
         
         # Now, we can load the model as usual.
         model = YOLO('yolov8n-seg.pt')
@@ -172,7 +181,8 @@ if model:
 
     st.subheader(f"Annotating: `{selected_filename}`")
 
-    canvas_.result = st_canvas(
+    # Corrected the typo here from `canvas_.result` to `canvas_result`
+    canvas_result = st_canvas(
         fill_color="rgba(255, 165, 0, 0.3)",
         stroke_width=stroke_width,
         stroke_color=stroke_color,
