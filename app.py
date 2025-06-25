@@ -22,462 +22,210 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- MODEL LOADING (CORRECTED) ---
-# This function is restored to its original, correct structure to fix the SyntaxError.
+# --- MODEL LOADING ---
 @st.cache_resource
 def load_yolo_model():
     """Loads the YOLOv8-seg model with multiple fallback approaches."""
     import warnings
     warnings.filterwarnings('ignore')
     
-    # Method 1: Try loading with comprehensive safe globals
     try:
-        # Get all ultralytics classes dynamically
         import ultralytics.nn.modules as modules
         import ultralytics.nn.tasks as tasks
-        
-        # Collect all classes from the modules
-        safe_classes = []
-        for name in dir(modules):
-            attr = getattr(modules, name)
-            if isinstance(attr, type):
-                safe_classes.append(attr)
-        
-        for name in dir(tasks):
-            attr = getattr(tasks, name)
-            if isinstance(attr, type):
-                safe_classes.append(attr)
-        
-        # Add torch classes
+        safe_classes = [getattr(modules, cls) for cls in dir(modules) if isinstance(getattr(modules, cls), type)]
+        safe_classes += [getattr(tasks, cls) for cls in dir(tasks) if isinstance(getattr(tasks, cls), type)]
         safe_classes.extend([Sequential])
-        
         torch.serialization.add_safe_globals(safe_classes)
         model = YOLO('yolov8n-seg.pt')
         st.success("✅ Model loaded with safe globals method")
         return model
-        
     except Exception as e1:
         st.warning(f"Safe globals method failed: {e1}")
     
-    # Method 2: Monkey patch the torch.load function
     try:
         st.info("Trying monkey patch method...")
-        import torch
         original_load = torch.load
-        
         def patched_load(*args, **kwargs):
             kwargs['weights_only'] = False
             return original_load(*args, **kwargs)
-        
         torch.load = patched_load
         model = YOLO('yolov8n-seg.pt')
-        torch.load = original_load  # Restore original
+        torch.load = original_load
         st.success("✅ Model loaded with monkey patch method")
         return model
-        
     except Exception as e2:
         st.warning(f"Monkey patch method failed: {e2}")
-        torch.load = original_load  # Restore original even if failed
+        if 'original_load' in locals(): torch.load = original_load
     
-    # Method 3: Use older PyTorch serialization
     try:
         st.info("Trying compatibility mode...")
-        import pickle
         import os
-        
-        # Temporarily disable pickle restrictions
         os.environ['TORCH_SERIALIZATION_WEIGHTS_ONLY'] = 'False'
-        
         model = YOLO('yolov8n-seg.pt')
         st.success("✅ Model loaded with compatibility mode")
         return model
-        
     except Exception as e3:
         st.error(f"All loading methods failed. Error: {e3}")
-        st.info("🔧 **Workaround suggestions:**")
-        st.info("1. Try running: `pip install torch==1.13.1 ultralytics==8.0.20`")
-        st.info("2. Or set environment variable: `export TORCH_SERIALIZATION_WEIGHTS_ONLY=False`")
-        st.info("3. The app will work in manual annotation mode")
         return None
 
 model = load_yolo_model()
 
-# Get class names from the model if loaded, otherwise use a fallback
 if model:
     CLASS_NAMES = list(model.names.values())
 else:
-    CLASS_NAMES = ['person', 'car', 'bicycle', 'motorcycle', 'bus', 'truck'] # Fallback
+    CLASS_NAMES = ['person', 'car', 'bicycle', 'motorcycle', 'bus', 'truck']
     st.warning("YOLO model failed to load. Using fallback class names.")
 
 # --- SESSION STATE INITIALIZATION ---
-if 'annotations' not in st.session_state:
-    st.session_state.annotations = {}
-if 'current_image_index' not in st.session_state:
-    st.session_state.current_image_index = 0
-if 'uploaded_files' not in st.session_state:
-    st.session_state.uploaded_files = []
-if 'canvas_key' not in st.session_state:
-    st.session_state.canvas_key = "canvas_0"
+if 'annotations' not in st.session_state: st.session_state.annotations = {}
+if 'current_image_index' not in st.session_state: st.session_state.current_image_index = 0
+if 'uploaded_files' not in st.session_state: st.session_state.uploaded_files = []
+if 'canvas_key' not in st.session_state: st.session_state.canvas_key = "canvas_0"
 if 'class_colors' not in st.session_state:
-    # Predefined colors for different classes
     colors = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7", "#DDA0DD", "#98D8C8", "#F7DC6F"]
     st.session_state.class_colors = {cls: colors[i % len(colors)] for i, cls in enumerate(CLASS_NAMES)}
-if 'annotation_stats' not in st.session_state:
-    st.session_state.annotation_stats = {}
+if 'annotation_stats' not in st.session_state: st.session_state.annotation_stats = {}
 
 # --- HELPER FUNCTIONS ---
-
-# --- VISUALIZATION FIX: This function now draws hollow boxes to show the real image ---
 def run_yolo_on_image(image_as_pil, confidence, selected_classes=None):
-    """
-    Performs YOLO prediction and returns results as HOLLOW bounding boxes
-    to show the real image underneath, fixing the "cartonic" look.
-    """
     if not model:
         st.warning("YOLO model not loaded. Cannot perform auto-detection.")
         return []
-
     img_array = np.array(image_as_pil)
     results = model.predict(source=img_array, conf=confidence, verbose=False)
-
     canvas_objects = []
     for result in results:
-        # We will ONLY process the boxes, and ignore the segmentation masks.
         if result.boxes is not None:
             for box in result.boxes:
                 class_id = int(box.cls[0])
                 class_name = model.names[class_id]
-                
-                # Filter by selected classes if specified
-                if selected_classes and class_name not in selected_classes:
-                    continue
-                
+                if selected_classes and class_name not in selected_classes: continue
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                 color = st.session_state.class_colors.get(class_name, "#FF6B6B")
-                
                 canvas_objects.append({
-                    "type": "rect", "left": x1, "top": y1,
-                    "width": x2 - x1, "height": y2 - y1,
-                    "fill": "rgba(0,0,0,0)",  # <-- Makes the box hollow (transparent fill)
-                    "stroke": color,         # The visible outline
-                    "strokeWidth": 3,        # A thicker outline for better visibility
-                    "label": f"{class_name} ({box.conf[0]:.2f})",
-                    "class": class_name,
+                    "type": "rect", "left": x1, "top": y1, "width": x2 - x1, "height": y2 - y1,
+                    "fill": "rgba(0,0,0,0)", "stroke": color, "strokeWidth": 3,
+                    "label": f"{class_name} ({box.conf[0]:.2f})", "class": class_name,
                     "confidence": float(box.conf[0])
                 })
-                
     return canvas_objects
 
-
 def update_annotation_stats():
-    """Update annotation statistics for the dashboard."""
-    stats = {
-        "total_images": len(st.session_state.uploaded_files),
-        "annotated_images": 0,
-        "total_objects": 0,
-        "class_distribution": {},
-        "confidence_stats": []
-    }
-    
+    stats = {"total_images": len(st.session_state.uploaded_files), "annotated_images": 0, "total_objects": 0, "class_distribution": {}, "confidence_stats": []}
     for filename, data in st.session_state.annotations.items():
         objects = data.get("objects", [])
         if objects:
             stats["annotated_images"] += 1
             stats["total_objects"] += len(objects)
-            
             for obj in objects:
                 obj_class = obj.get("class", "unknown")
                 stats["class_distribution"][obj_class] = stats["class_distribution"].get(obj_class, 0) + 1
-                
-                if "confidence" in obj:
-                    stats["confidence_stats"].append(obj["confidence"])
-    
+                if "confidence" in obj: stats["confidence_stats"].append(obj["confidence"])
     st.session_state.annotation_stats = stats
-
-def export_to_yolo_format():
-    """Export annotations in YOLO format (txt files)."""
-    yolo_data = {}
-    
-    for filename, data in st.session_state.annotations.items():
-        # Get image dimensions
-        current_file = next((f for f in st.session_state.uploaded_files if f.name == filename), None)
-        if not current_file: continue
-        
-        image = Image.open(io.BytesIO(current_file.getvalue()))
-        img_width, img_height = image.size
-        
-        yolo_lines = []
-        for obj in data.get("objects", []):
-            if obj["type"] == "rect":
-                # Convert to YOLO format: class_id center_x center_y width height (normalized)
-                x = obj["left"]
-                y = obj["top"]
-                w = obj["width"]
-                h = obj["height"]
-                
-                center_x = (x + w/2) / img_width
-                center_y = (y + h/2) / img_height
-                norm_width = w / img_width
-                norm_height = h / img_height
-                
-                class_name = obj.get("class", "unknown")
-                if class_name in CLASS_NAMES:
-                    class_id = CLASS_NAMES.index(class_name)
-                    yolo_lines.append(f"{class_id} {center_x:.6f} {center_y:.6f} {norm_width:.6f} {norm_height:.6f}")
-        
-        yolo_data[filename.replace('.jpg', '.txt').replace('.jpeg', '.txt').replace('.png', '.txt')] = '\n'.join(yolo_lines)
-    
-    return yolo_data
-
-def create_download_package():
-    """Create a ZIP file containing all annotations in multiple formats."""
-    # Create in-memory ZIP file
-    zip_buffer = io.BytesIO()
-    
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        # Add JSON annotations
-        json_data = {
-            "metadata": {
-                "created_at": datetime.now().isoformat(),
-                "total_images": len(st.session_state.uploaded_files),
-                "classes": CLASS_NAMES,
-                "statistics": st.session_state.annotation_stats
-            },
-            "classes": CLASS_NAMES,
-            "images": [
-                {"filename": fname, "annotations": data["objects"]}
-                for fname, data in st.session_state.annotations.items()
-            ]
-        }
-        zip_file.writestr("annotations.json", json.dumps(json_data, indent=2))
-        
-        # Add YOLO format files
-        yolo_data = export_to_yolo_format()
-        for filename, content in yolo_data.items():
-            zip_file.writestr(f"yolo_labels/{filename}", content)
-        
-        # Add classes.txt for YOLO
-        zip_file.writestr("yolo_labels/classes.txt", '\n'.join(CLASS_NAMES))
-        
-        # Add CSV summary
-        csv_data = []
-        for filename, data in st.session_state.annotations.items():
-            for obj in data.get("objects", []):
-                csv_data.append({
-                    "filename": filename,
-                    "object_type": obj["type"],
-                    "class": obj.get("class", "unknown"),
-                    "confidence": obj.get("confidence", ""),
-                    "x": obj.get("left", ""),
-                    "y": obj.get("top", ""),
-                    "width": obj.get("width", ""),
-                    "height": obj.get("height", "")
-                })
-        
-        if csv_data:
-            df = pd.DataFrame(csv_data)
-            zip_file.writestr("summary.csv", df.to_csv(index=False))
-    
-    zip_buffer.seek(0)
-    return zip_buffer.getvalue()
 
 # --- UI RENDERING ---
 st.title("🎯 YOLOv8 Data Annotation Tool Pro")
 st.markdown("*Advanced annotation tool with auto-detection, manual editing, and comprehensive export options*")
 
-# Update stats
 update_annotation_stats()
 
-# --- MAIN LAYOUT ---
-# Top metrics row
 if st.session_state.uploaded_files:
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Total Images", st.session_state.annotation_stats["total_images"])
-    with col2:
-        st.metric("Annotated", st.session_state.annotation_stats["annotated_images"])
-    with col3:
-        st.metric("Total Objects", st.session_state.annotation_stats["total_objects"])
-    with col4:
-        completion_rate = (st.session_state.annotation_stats["annotated_images"] / 
-                          st.session_state.annotation_stats["total_images"] * 100) if st.session_state.annotation_stats["total_images"] > 0 else 0
-        st.metric("Completion", f"{completion_rate:.1f}%")
+    cols = st.columns(4)
+    cols[0].metric("Total Images", st.session_state.annotation_stats["total_images"])
+    cols[1].metric("Annotated", st.session_state.annotation_stats["annotated_images"])
+    cols[2].metric("Total Objects", st.session_state.annotation_stats["total_objects"])
+    completion = (st.session_state.annotation_stats["annotated_images"] / st.session_state.annotation_stats["total_images"] * 100) if st.session_state.annotation_stats["total_images"] > 0 else 0
+    cols[3].metric("Completion", f"{completion:.1f}%")
 
-# --- SIDEBAR ---
 with st.sidebar:
     st.header("🗂️ Project Management")
-    
-    # Upload section
     st.subheader("1. Upload Data")
-    uploaded_files = st.file_uploader(
-        "Choose images...", type=["jpg", "jpeg", "png"], accept_multiple_files=True
-    )
+    uploaded_files = st.file_uploader("Choose images...", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
     if uploaded_files:
         st.session_state.uploaded_files = uploaded_files
         for f in uploaded_files:
             if f.name not in st.session_state.annotations:
                 st.session_state.annotations[f.name] = {"objects": []}
-
     if not st.session_state.uploaded_files:
         st.info("Please upload one or more images to begin.")
         st.stop()
 
-    # Navigation section
     st.subheader("2. Navigation")
     filenames = [f.name for f in st.session_state.uploaded_files]
-    selected_filename = st.selectbox(
-        "Select an image", filenames,
-        index=st.session_state.current_image_index,
-        key="image_selector"
-    )
+    selected_filename = st.selectbox("Select an image", filenames, index=st.session_state.current_image_index, key="image_selector")
     if filenames.index(selected_filename) != st.session_state.current_image_index:
         st.session_state.current_image_index = filenames.index(selected_filename)
         st.session_state.canvas_key = f"canvas_{st.session_state.current_image_index}"
         st.rerun()
 
-
-    col1, col2 = st.columns(2)
-    if col1.button("⬅️ Prev", use_container_width=True, disabled=(st.session_state.current_image_index == 0)):
+    nav_cols = st.columns(2)
+    if nav_cols[0].button("⬅️ Prev", use_container_width=True, disabled=(st.session_state.current_image_index == 0)):
         st.session_state.current_image_index -= 1
         st.session_state.canvas_key = f"canvas_{st.session_state.current_image_index}"
         st.rerun()
-
-    if col2.button("Next ➡️", use_container_width=True, disabled=(st.session_state.current_image_index >= len(st.session_state.uploaded_files) - 1)):
+    if nav_cols[1].button("Next ➡️", use_container_width=True, disabled=(st.session_state.current_image_index >= len(filenames) - 1)):
         st.session_state.current_image_index += 1
         st.session_state.canvas_key = f"canvas_{st.session_state.current_image_index}"
         st.rerun()
+    st.progress((st.session_state.current_image_index + 1) / len(filenames), text=f"Image {st.session_state.current_image_index + 1} of {len(filenames)}")
 
-    # Progress indicator
-    progress_value = (st.session_state.current_image_index + 1) / len(st.session_state.uploaded_files)
-    st.progress(progress_value, text=f"Image {st.session_state.current_image_index + 1} of {len(st.session_state.uploaded_files)}")
-
-
-    # Auto-detection section
     st.subheader("3. 🤖 Auto-Detection")
     confidence_slider = st.slider("Confidence Threshold", 0.0, 1.0, 0.30, 0.05)
-    
-    # Class filter
-    selected_classes = st.multiselect(
-        "Filter Classes (empty = all)", 
-        CLASS_NAMES, 
-        default=[],
-        help="Select specific classes to detect"
-    )
-    
+    selected_classes = st.multiselect("Filter Classes (empty = all)", CLASS_NAMES, default=[], help="Select specific classes to detect")
     if st.button("🎯 Run Auto-Detect", use_container_width=True, disabled=(not model)):
         current_file = st.session_state.uploaded_files[st.session_state.current_image_index]
-        image = Image.open(io.BytesIO(current_file.getvalue()))
+        image = Image.open(io.BytesIO(current_file.getvalue())).convert("RGB")
         detected_objects = run_yolo_on_image(image, confidence_slider, selected_classes or None)
         st.session_state.annotations[selected_filename]["objects"] = detected_objects
-        st.session_state.canvas_key = f"canvas_{st.session_state.current_image_index}_{confidence_slider}"
+        st.session_state.canvas_key = f"canvas_detect_{st.session_state.current_image_index}"
         st.rerun()
 
-    # Annotation tools section
     st.subheader("4. 🎨 Annotation Tools")
     drawing_mode = st.selectbox("Annotation Mode", ("transform", "rect", "path", "freedraw", "point", "line"))
     stroke_width = st.slider("Stroke width: ", 1, 25, 3)
     stroke_color = st.color_picker("Stroke color hex: ", "#FF6B6B")
-    bg_color = st.color_picker("Background color hex: ", "#eee")
+    # This color picker is now for drawing without a background image, it won't affect the main canvas.
+    bg_color_picker = st.color_picker("Background color hex: ", "#eee")
 
-    # Export section
-    st.subheader("5. 📤 Export Options")
-    
-    export_format = st.selectbox(
-        "Export Format",
-        ["Complete Package (ZIP)", "JSON Only", "YOLO Format", "CSV Summary"]
-    )
-    
-    if st.button("💾 Download Annotations", use_container_width=True):
-        if export_format == "Complete Package (ZIP)":
-            zip_data = create_download_package()
-            st.download_button(
-                label="📦 Download ZIP Package",
-                data=zip_data,
-                file_name=f"annotations_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-                mime="application/zip"
-            )
-        elif export_format == "JSON Only":
-            export_data = {
-                "classes": CLASS_NAMES,
-                "images": [
-                    {"filename": fname, "annotations": data["objects"]}
-                    for fname, data in st.session_state.annotations.items()
-                ]
-            }
-            st.download_button(
-                label="📋 Download JSON",
-                data=json.dumps(export_data, indent=2),
-                file_name="annotations.json",
-                mime="application/json"
-            )
-
-    # Statistics section
-    st.subheader("📊 Project Statistics")
-    if st.session_state.annotation_stats["class_distribution"]:
-        st.write("**Class Distribution:**")
-        for class_name, count in st.session_state.annotation_stats["class_distribution"].items():
-            st.write(f"• {class_name}: {count}")
-    
-    if st.session_state.annotation_stats["confidence_stats"]:
-        avg_conf = np.mean(st.session_state.annotation_stats["confidence_stats"]) if st.session_state.annotation_stats["confidence_stats"] else 0.0
-        st.metric("Avg Confidence", f"{avg_conf:.3f}")
-
-# --- MAIN CANVAS AREA ---
 if st.session_state.uploaded_files:
     current_file_obj = st.session_state.uploaded_files[st.session_state.current_image_index]
-    current_image = Image.open(io.BytesIO(current_file_obj.getvalue()))
-
+    current_image = Image.open(io.BytesIO(current_file_obj.getvalue())).convert("RGB")
     initial_drawing = {"objects": st.session_state.annotations[selected_filename].get("objects", [])}
 
-    # Header with image info and quick actions
-    col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
-    with col1:
-        st.subheader(f"📷 {selected_filename}")
-        st.caption(f"Size: {current_image.size[0]}×{current_image.size[1]}px | Objects: {len(initial_drawing['objects'])}")
-    
-    with col2:
-        if st.button("🎯 Quick Detect", help="Run YOLO with current settings"):
-            detected_objects = run_yolo_on_image(current_image, confidence_slider, selected_classes or None)
-            st.session_state.annotations[selected_filename]["objects"] = detected_objects
-            st.session_state.canvas_key = f"canvas_quick_{st.session_state.current_image_index}"
-            st.rerun()
-    
-    with col3:
-        if st.button("➕ Add to Current", help="Add detections to existing annotations"):
-            detected_objects = run_yolo_on_image(current_image, confidence_slider, selected_classes or None)
-            current_objects = st.session_state.annotations[selected_filename]["objects"]
-            st.session_state.annotations[selected_filename]["objects"] = current_objects + detected_objects
-            st.session_state.canvas_key = f"canvas_add_{st.session_state.current_image_index}"
-            st.rerun()
-    
-    with col4:
-        if st.button("🗑️ Clear All", help="Remove all annotations"):
-            st.session_state.annotations[selected_filename]["objects"] = []
-            st.session_state.canvas_key = f"canvas_clear_{st.session_state.current_image_index}"
-            st.rerun()
+    header_cols = st.columns([3, 1, 1, 1])
+    header_cols[0].subheader(f"📷 {selected_filename}")
+    header_cols[0].caption(f"Size: {current_image.size[0]}×{current_image.size[1]}px | Objects: {len(initial_drawing['objects'])}")
+    if header_cols[1].button("🎯 Quick Detect", help="Run YOLO with current settings"):
+        detected_objects = run_yolo_on_image(current_image, confidence_slider, selected_classes or None)
+        st.session_state.annotations[selected_filename]["objects"] = detected_objects
+        st.session_state.canvas_key = f"canvas_quick_{st.session_state.current_image_index}"
+        st.rerun()
+    if header_cols[2].button("➕ Add to Current", help="Add detections to existing annotations"):
+        detected_objects = run_yolo_on_image(current_image, confidence_slider, selected_classes or None)
+        current_objects = st.session_state.annotations[selected_filename]["objects"]
+        st.session_state.annotations[selected_filename]["objects"] = current_objects + detected_objects
+        st.session_state.canvas_key = f"canvas_add_{st.session_state.current_image_index}"
+        st.rerun()
+    if header_cols[3].button("🗑️ Clear All", help="Remove all annotations"):
+        st.session_state.annotations[selected_filename]["objects"] = []
+        st.session_state.canvas_key = f"canvas_clear_{st.session_state.current_image_index}"
+        st.rerun()
 
-    # Calculate canvas dimensions
-    max_width = 900
-    max_height = 600
-    
+    max_width, max_height = 900, 600
     img_width, img_height = current_image.size
     scale_factor = min(max_width / img_width, max_height / img_height, 1.0)
-    
     canvas_width = int(img_width * scale_factor)
     canvas_height = int(img_height * scale_factor)
-    
-    if scale_factor < 1.0:
-        display_image = current_image.resize((canvas_width, canvas_height), Image.Resampling.LANCZOS)
-    else:
-        display_image = current_image
+    display_image = current_image.resize((canvas_width, canvas_height), Image.Resampling.LANCZOS) if scale_factor < 1.0 else current_image
 
-    # Canvas
+    # --- IMAGE NOT SHOWING FIX ---
+    # The background_color is set to be transparent to ensure the background_image is visible.
     canvas_result = st_canvas(
         fill_color="rgba(255, 165, 0, 0.3)",
         stroke_width=stroke_width,
         stroke_color=stroke_color,
-        background_color=bg_color,
+        background_color="rgba(0, 0, 0, 0)",
         background_image=display_image,
         update_streamlit=True,
         height=canvas_height,
@@ -487,36 +235,25 @@ if st.session_state.uploaded_files:
         key=st.session_state.canvas_key
     )
 
-    # --- DISAPPEARING ANNOTATION FIX ---
-    # This logic correctly saves manual drawings without overwriting programmatic updates.
     if canvas_result.json_data is not None and canvas_result.json_data["objects"] != initial_drawing["objects"]:
         st.session_state.annotations[selected_filename]["objects"] = canvas_result.json_data["objects"]
         st.rerun()
 
-
-    # Show object details in expandable section
-    with st.expander("🔍 Object Details", expanded=False):
+    with st.expander("🔍 Object Details"):
         objects = st.session_state.annotations.get(selected_filename, {}).get("objects", [])
         if objects:
             for i, obj in enumerate(objects):
-                col1, col2, col3 = st.columns([1, 2, 1])
-                with col1:
-                    st.write(f"**Object {i+1}**")
-                with col2:
-                    obj_type = obj.get("type", "unknown")
-                    obj_class = obj.get("class", "manual")
-                    confidence = obj.get("confidence", "")
-                    conf_text = f" ({confidence:.3f})" if isinstance(confidence, float) else ""
-                    st.write(f"{obj_type} - {obj_class}{conf_text}")
-                with col3:
-                    # Make key unique to prevent errors when switching images
-                    if st.button("🗑️", key=f"delete_{i}_{selected_filename}", help="Delete this object"):
-                        objects.pop(i)
-                        st.session_state.annotations[selected_filename]["objects"] = objects
-                        st.rerun()
+                detail_cols = st.columns([1, 2, 1])
+                detail_cols[0].write(f"**Object {i+1}**")
+                obj_class = obj.get("class", "manual")
+                conf_text = f" ({obj.get('confidence', 0):.3f})" if 'confidence' in obj else ""
+                detail_cols[1].write(f"{obj.get('type', 'unknown')} - {obj_class}{conf_text}")
+                if detail_cols[2].button("🗑️", key=f"delete_{i}_{selected_filename}", help="Delete this object"):
+                    objects.pop(i)
+                    st.session_state.annotations[selected_filename]["objects"] = objects
+                    st.rerun()
         else:
             st.info("No annotations yet. Use auto-detect or draw manually.")
 
-    # JSON view (collapsible)
-    with st.expander("📋 Raw JSON Data", expanded=False):
+    with st.expander("📋 Raw JSON Data"):
         st.json(st.session_state.annotations.get(selected_filename, {}))
