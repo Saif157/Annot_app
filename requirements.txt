@@ -1,6 +1,6 @@
-streamlit==1.24.0
+streamlit==1.33.0
+ultralytics==8.1.0
+numpy==1.26.4
+opencv-python-headless==4.9.0.80
+Pillow==10.2.0
 streamlit-drawable-canvas==0.9.3
-ultralytics==8.0.196
-numpy==1.25.2
-opencv-python-headless==4.8.0.74
-Pillow==9.5.0
