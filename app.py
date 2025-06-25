@@ -13,7 +13,6 @@ import json
 import torch
 import zipfile
 from datetime import datetime
-import base64
 
 # --- CONFIGURATION ---
 st.set_page_config(
@@ -143,10 +142,11 @@ with st.sidebar:
     uploaded_files = st.file_uploader("Choose images...", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
     if uploaded_files:
-        st.session_state.uploaded_files = uploaded_files
-        for f in uploaded_files:
-            if f.name not in st.session_state.annotations:
-                st.session_state.annotations[f.name] = {"objects": []}
+        if st.session_state.uploaded_files != uploaded_files:
+            st.session_state.uploaded_files = uploaded_files
+            st.session_state.current_image_index = 0
+            st.session_state.annotations = {f.name: {"objects": []} for f in uploaded_files}
+            st.rerun()
     if not st.session_state.uploaded_files:
         st.info("Please upload one or more images to begin.")
         st.stop()
@@ -185,8 +185,7 @@ with st.sidebar:
     drawing_mode = st.selectbox("Annotation Mode", ("transform", "rect", "path", "freedraw", "point", "line"))
     stroke_width = st.slider("Stroke width: ", 1, 25, 3)
     stroke_color = st.color_picker("Stroke color hex: ", "#FF6B6B")
-    # This color picker is now for drawing without a background image, it won't affect the main canvas.
-    bg_color_picker = st.color_picker("Background color hex: ", "#eee")
+    bg_color_picker = st.color_picker("Background color hex (for blank canvas): ", "#eee")
 
 if st.session_state.uploaded_files:
     current_file_obj = st.session_state.uploaded_files[st.session_state.current_image_index]
@@ -219,8 +218,8 @@ if st.session_state.uploaded_files:
     canvas_height = int(img_height * scale_factor)
     display_image = current_image.resize((canvas_width, canvas_height), Image.Resampling.LANCZOS) if scale_factor < 1.0 else current_image
 
-    # --- IMAGE NOT SHOWING FIX ---
-    # The background_color is set to be transparent to ensure the background_image is visible.
+    # --- FINAL FIX for blank canvas ---
+    # The background_color is set to be fully transparent to ensure the background_image is always visible.
     canvas_result = st_canvas(
         fill_color="rgba(255, 165, 0, 0.3)",
         stroke_width=stroke_width,
@@ -239,7 +238,7 @@ if st.session_state.uploaded_files:
         st.session_state.annotations[selected_filename]["objects"] = canvas_result.json_data["objects"]
         st.rerun()
 
-    with st.expander("🔍 Object Details"):
+    with st.expander("🔍 Object Details", expanded=True):
         objects = st.session_state.annotations.get(selected_filename, {}).get("objects", [])
         if objects:
             for i, obj in enumerate(objects):
