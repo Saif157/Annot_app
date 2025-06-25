@@ -1,6 +1,6 @@
-streamlit
+streamlit==1.24.0
+streamlit-drawable-canvas==0.9.3
 ultralytics
 numpy
 opencv-python-headless
-streamlit-drawable-canvas
 Pillow
