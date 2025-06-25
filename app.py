@@ -1,16 +1,20 @@
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
 import pandas as pd
-from ultralytics import YOLO
-from ultralytics.nn.tasks import SegmentationModel
-# Import all common YOLOv8 building blocks to trust them
-from ultralytics.nn.modules import Conv, C2f, SPPF, Concat, Bottleneck
-from torch.nn import Sequential
 import numpy as np
 from PIL import Image
 import io
 import json
 import torch
+
+# --- Ultralytics and PyTorch Imports ---
+from ultralytics import YOLO
+# Import all the necessary custom classes from ultralytics to be trusted
+from ultralytics.nn.tasks import SegmentationModel
+from ultralytics.nn.modules import (
+    Conv, C2f, SPPF, Concat, Bottleneck, Detect, Segment
+)
+from torch.nn import Sequential
 
 # --- CONFIGURATION ---
 st.set_page_config(
@@ -24,8 +28,9 @@ st.set_page_config(
 def load_yolo_model():
     """Loads the YOLOv8-seg model by approving all necessary custom classes."""
     try:
-        # Proactively add all common YOLOv8 classes to the trusted list.
-        # This should prevent any further "UnpicklingError" messages.
+        # Proactively add all known custom classes from the YOLOv8 model to
+        # PyTorch's trusted list. This is the definitive fix for the
+        # "UnpicklingError: Unsupported global" chain of errors.
         torch.serialization.add_safe_globals([
             SegmentationModel,
             Sequential,
@@ -33,7 +38,9 @@ def load_yolo_model():
             C2f,
             SPPF,
             Concat,
-            Bottleneck
+            Bottleneck,
+            Detect,
+            Segment
         ])
         
         # Now, we can load the model as usual.
@@ -77,14 +84,15 @@ def run_yolo_on_image(image_as_pil, confidence):
     canvas_objects = []
     for result in results:
         # Process Boxes
-        for box in result.boxes:
-            x1, y1, x2, y2 = box.xyxy[0].tolist()
-            canvas_objects.append({
-                "type": "rect", "left": x1, "top": y1,
-                "width": x2 - x1, "height": y2 - y1,
-                "fill": "#FF6B6B33", "stroke": "#FF6B6B", "strokeWidth": 2,
-                "label": f"{model.names[int(box.cls[0])]} ({box.conf[0]:.2f})"
-            })
+        if result.boxes:
+            for box in result.boxes:
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                canvas_objects.append({
+                    "type": "rect", "left": x1, "top": y1,
+                    "width": x2 - x1, "height": y2 - y1,
+                    "fill": "#FF6B6B33", "stroke": "#FF6B6B", "strokeWidth": 2,
+                    "label": f"{model.names[int(box.cls[0])]} ({box.conf[0]:.2f})"
+                })
         # Process Polygons
         if result.masks:
             for i, mask in enumerate(result.masks):
@@ -172,7 +180,6 @@ with st.sidebar:
         )
 
 # --- MAIN CANVAS AREA ---
-# We only show the main canvas if the model has successfully loaded
 if model:
     current_file_obj = st.session_state.uploaded_files[st.session_state.current_image_index]
     current_image = Image.open(io.BytesIO(current_file_obj.getvalue()))
@@ -181,7 +188,6 @@ if model:
 
     st.subheader(f"Annotating: `{selected_filename}`")
 
-    # Corrected the typo here from `canvas_.result` to `canvas_result`
     canvas_result = st_canvas(
         fill_color="rgba(255, 165, 0, 0.3)",
         stroke_width=stroke_width,
