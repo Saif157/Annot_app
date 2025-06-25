@@ -2,10 +2,12 @@ import streamlit as st
 from streamlit_drawable_canvas import st_canvas
 import pandas as pd
 from ultralytics import YOLO
+from ultralytics.nn.tasks import SegmentationModel  # This import is essential
 import numpy as np
 from PIL import Image
 import io
 import json
+import torch  # This import is essential
 
 # --- CONFIGURATION ---
 st.set_page_config(
@@ -17,13 +19,15 @@ st.set_page_config(
 # --- MODEL LOADING ---
 @st.cache_resource
 def load_yolo_model():
-    """Loads the YOLOv8-seg model and performs a warm-up prediction."""
+    """Loads the YOLOv8-seg model using the correct PyTorch security context."""
     try:
-        model = YOLO('yolov8n-seg.pt')
-        # Perform a warm-up prediction to ensure the model is fully initialized
-        model.predict(np.zeros((640, 640, 3)), verbose=False)
+        # This context manager is the definitive fix for the "Unsupported global" error.
+        # It tells PyTorch that it's safe to load the SegmentationModel class.
+        with torch.serialization.safe_globals():
+            model = YOLO('yolov8n-seg.pt')
         return model
     except Exception as e:
+        # Display the full error to help debug if it still fails
         st.error(f"Error loading YOLO model: {e}")
         st.exception(e)
         return None
