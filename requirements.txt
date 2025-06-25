@@ -1,6 +1,6 @@
 streamlit==1.24.0
 streamlit-drawable-canvas==0.9.3
-ultralytics==8.0.196
-numpy==1.24.4
-opencv-python-headless==4.8.0.74
-Pillow==9.5.0
+ultralytics
+numpy
+opencv-python-headless
+Pillow
